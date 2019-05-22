@@ -23,11 +23,11 @@ describe "Voting Consistency" do
     two_vote_topic.save_custom_fields
 
     # one vote
-    UserCustomField.create!(user_id: user.id, name: DiscourseVoting::VOTES_ARCHIVE, value: one_vote_topic.id)
+    UserCustomField.create!(user_id: user.id, name: DiscourseVoting::UP_VOTES_ARCHIVE, value: one_vote_topic.id)
 
     # two votes
-    UserCustomField.create!(user_id: user.id, name: DiscourseVoting::VOTES_ARCHIVE, value: two_vote_topic.id)
-    UserCustomField.create!(user_id: user2.id, name: DiscourseVoting::VOTES, value: two_vote_topic.id)
+    UserCustomField.create!(user_id: user.id, name: DiscourseVoting::UP_VOTES_ARCHIVE, value: two_vote_topic.id)
+    UserCustomField.create!(user_id: user2.id, name: DiscourseVoting::UP_VOTES, value: two_vote_topic.id)
 
     Jobs::VotingEnsureConsistency.new.execute_onceoff(nil)
 

@@ -10,9 +10,19 @@ en:
       votes_nav_help: "topics with the most votes"
       voted: "You voted on this topic"
       allow_topic_voting: "Allow users to vote on topics in this category"
+
       vote_title: "Vote"
+      up_vote_title: "Up Vote"
+      down_vote_title: "Down Vote"
+
       vote_title_plural: "Votes"
+      up_vote_title_plural: "Up Votes"
+      down_vote_title_plural: "Down Votes"
+
       voted_title: "Voted"
+      up_voted_title: "Up Voted"
+      down_voted_title: "Down Voted"
+
       voting_closed_title: "Closed"
       voting_limit: "Limit"
       votes_left:

@@ -19,17 +19,21 @@ Discourse.anonymous_filters.push(:votes)
 
 after_initialize do
   module ::DiscourseVoting
-    VOTES = "votes".freeze
-    VOTES_ARCHIVE = "votes_archive".freeze
+    UP_VOTES = "votes".freeze
+    UP_VOTES_ARCHIVE = "votes_archive".freeze
     VOTE_COUNT = "vote_count".freeze
+    DOWN_VOTES = "down_votes".freeze
+    DOWN_VOTES_ARCHIVE = "votes_archive".freeze
 
     class Engine < ::Rails::Engine
       isolate_namespace DiscourseVoting
     end
   end
 
-  User.register_custom_field_type(::DiscourseVoting::VOTES, [:integer])
-  User.register_custom_field_type(::DiscourseVoting::VOTES_ARCHIVE, [:integer])
+  User.register_custom_field_type(::DiscourseVoting::UP_VOTES, [:integer])
+  User.register_custom_field_type(::DiscourseVoting::UP_VOTES_ARCHIVE, [:integer])
+  User.register_custom_field_type(::DiscourseVoting::DOWN_VOTES, [:integer])
+  User.register_custom_field_type(::DiscourseVoting::DOWN_VOTES_ARCHIVE, [:integer])
   Topic.register_custom_field_type(::DiscourseVoting::VOTE_COUNT, :integer)
 
   load File.expand_path('../app/jobs/onceoff/voting_ensure_consistency.rb', __FILE__)
@@ -74,19 +78,36 @@ after_initialize do
     end
 
     def user_voted
+      user_up_voted || user_down_voted
+    end
+
+    def user_up_voted
       if scope.user
-        object.topic.user_voted(scope.user)
+        object.topic.user_up_voted(scope.user)
       else
         false
       end
     end
 
+    def user_down_voted
+      if scope.user
+        object.topic.user_down_voted(scope.user)
+      else
+        false
+      end
+    end
   end
 
   add_to_serializer(:topic_list_item, :vote_count) { object.vote_count }
   add_to_serializer(:topic_list_item, :can_vote) { object.can_vote? }
   add_to_serializer(:topic_list_item, :user_voted) {
     object.user_voted(scope.user) if scope.user
+  }
+  add_to_serializer(:topic_list_item, :user_up_voted) {
+    object.user_up_voted(scope.user) if scope.user
+  }
+  add_to_serializer(:topic_list_item, :user_down_voted) {
+    object.user_down_voted(scope.user) if scope.user
   }
 
   class ::Category
@@ -123,24 +144,37 @@ after_initialize do
   require_dependency 'user'
   class ::User
     def vote_count
-      votes.length
+      up_votes.length + down_votes.length
     end
 
     def alert_low_votes?
       (vote_limit - vote_count) <= SiteSetting.voting_alert_votes_left
     end
 
-    def votes
-      votes = self.custom_fields[DiscourseVoting::VOTES] || []
+    def up_votes
+      up_votes = self.custom_fields[DiscourseVoting::UP_VOTES] || []
       # "" can be in there sometimes, it gets turned into a 0
-      votes = votes.reject { |v| v == 0 }.uniq
-      votes
+      up_votes = up_votes.reject { |v| v == 0 }.uniq
+      up_votes
     end
 
-    def votes_archive
-      archived_votes = self.custom_fields[DiscourseVoting::VOTES_ARCHIVE] || []
-      archived_votes = archived_votes.reject { |v| v == 0 }.uniq
-      archived_votes
+    def up_votes_archive
+      archived_up_votes = self.custom_fields[DiscourseVoting::UP_VOTES_ARCHIVE] || []
+      archived_up_votes = archived_up_votes.reject { |v| v == 0 }.uniq
+      archived_up_votes
+    end
+
+    def down_votes
+      down_votes = self.custom_fields[DiscourseVoting::DOWN_VOTES] || []
+      # "" can be in there sometimes, it gets turned into a 0
+      down_votes = down_votes.reject { |v| v == 0 }.uniq
+      down_votes
+    end
+
+    def down_votes_archive
+      down_votes_archive = self.custom_fields[DiscourseVoting::DOWN_VOTES_ARCHIVE] || []
+      down_votes_archive = down_votes_archive.reject { |v| v == 0 }.uniq
+      down_votes_archive
     end
 
     def reached_voting_limit?
@@ -174,6 +208,10 @@ after_initialize do
       SiteSetting.voting_enabled && Category.can_vote?(category_id) && category.topic_id != id
     end
 
+    def can_down_vote?
+      SiteSetting.voting_enabled && SiteSetting.voting_allow_down_vote && Category.can_vote?(category_id) && category.topic_id != id
+    end
+
     def vote_count
       if count = self.custom_fields[DiscourseVoting::VOTE_COUNT]
         # we may have a weird array here, don't explode
@@ -185,28 +223,52 @@ after_initialize do
     end
 
     def user_voted(user)
-      if user && user.custom_fields[DiscourseVoting::VOTES]
-        user.custom_fields[DiscourseVoting::VOTES].include? self.id
+      user_up_voted(user) || user_down_voted(user)
+    end
+
+    def user_up_voted(user)
+      if user && user.custom_fields[DiscourseVoting::UP_VOTES]
+        user.custom_fields[DiscourseVoting::UP_VOTES].include? self.id
+      else
+        false
+      end
+    end
+
+    def user_down_voted(user)
+      if user && user.custom_fields[DiscourseVoting::DOWN_VOTES]
+        user.custom_fields[DiscourseVoting::DOWN_VOTES].include? self.id
       else
         false
       end
     end
 
     def update_vote_count
-      count =
+      up_count =
         UserCustomField.where("value = :value AND name IN (:keys)",
-          value: id.to_s, keys: [DiscourseVoting::VOTES, DiscourseVoting::VOTES_ARCHIVE]).count
+          value: id.to_s, keys: [DiscourseVoting::UP_VOTES, DiscourseVoting::UP_VOTES_ARCHIVE]).count
+      down_count =
+          UserCustomField.where("value = :value AND name IN (:keys)",
+            value: id.to_s, keys: [DiscourseVoting::DOWN_VOTES, DiscourseVoting::DOWN_VOTES_ARCHIVE]).count
 
-      custom_fields[DiscourseVoting::VOTE_COUNT] = count
+      custom_fields[DiscourseVoting::VOTE_COUNT] = up_count - down_count
       save_custom_fields
     end
 
     def who_voted
-      return nil unless SiteSetting.voting_show_who_voted
+      who_up_voted
+    end
 
+    def who_up_voted
+      # Return who_voted even if SiteSetting.voting_show_who_voted is disabled.
+      # it will be check in the controller.
       User.where("id in (
         SELECT user_id FROM user_custom_fields WHERE name IN (:keys) AND value = :value
-      )", value: id.to_s, keys: [DiscourseVoting::VOTES, DiscourseVoting::VOTES_ARCHIVE])
+      )", value: id.to_s, keys: [DiscourseVoting::UP_VOTES, DiscourseVoting::UP_VOTES_ARCHIVE])
+    end
+    def who_down_voted
+      User.where("id in (
+        SELECT user_id FROM user_custom_fields WHERE name IN (:keys) AND value = :value
+      )", value: id.to_s, keys: [DiscourseVoting::DOWN_VOTES, DiscourseVoting::DOWN_VOTES_ARCHIVE])
     end
 
   end
@@ -232,7 +294,7 @@ after_initialize do
 
     def list_voted_by(user)
       create_list(:user_topics) do |topics|
-        topics.where(id: user.custom_fields[DiscourseVoting::VOTES])
+        topics.where(id: user.custom_fields[DiscourseVoting::UP_VOTES])
       end
     end
 
@@ -250,10 +312,16 @@ after_initialize do
     class VoteRelease < Jobs::Base
       def execute(args)
         if topic = Topic.find_by(id: args[:topic_id])
-          UserCustomField.where(name: DiscourseVoting::VOTES, value: args[:topic_id]).find_each do |user_field|
+          UserCustomField.where(name: DiscourseVoting::UP_VOTES, value: args[:topic_id]).find_each do |user_field|
             user = User.find(user_field.user_id)
-            user.custom_fields[DiscourseVoting::VOTES] = user.votes.dup - [args[:topic_id]]
-            user.custom_fields[DiscourseVoting::VOTES_ARCHIVE] = user.votes_archive.dup.push(args[:topic_id]).uniq
+            user.custom_fields[DiscourseVoting::UP_VOTES] = user.up_votes.dup - [args[:topic_id]]
+            user.custom_fields[DiscourseVoting::UP_VOTES_ARCHIVE] = user.up_votes_archive.dup.push(args[:topic_id]).uniq
+            user.save!
+          end
+          UserCustomField.where(name: DiscourseVoting::DOWN_VOTES, value: args[:topic_id]).find_each do |user_field|
+            user = User.find(user_field.user_id)
+            user.custom_fields[DiscourseVoting::DOWN_VOTES] = user.down_votes.dup - [args[:topic_id]]
+            user.custom_fields[DiscourseVoting::DOWN_VOTES_ARCHIVE] = user.down_votes_archive.dup.push(args[:topic_id]).uniq
             user.save!
           end
           topic.update_vote_count
@@ -264,10 +332,17 @@ after_initialize do
     class VoteReclaim < Jobs::Base
       def execute(args)
         if topic = Topic.find_by(id: args[:topic_id])
-          UserCustomField.where(name: DiscourseVoting::VOTES_ARCHIVE, value: topic.id).find_each do |user_field|
+          UserCustomField.where(name: DiscourseVoting::UP_VOTES_ARCHIVE, value: topic.id).find_each do |user_field|
             user = User.find(user_field.user_id)
-            user.custom_fields[DiscourseVoting::VOTES] = user.votes.dup.push(topic.id).uniq
-            user.custom_fields[DiscourseVoting::VOTES_ARCHIVE] = user.votes_archive.dup - [topic.id]
+            user.custom_fields[DiscourseVoting::UP_VOTES] = user.up_votes.dup.push(topic.id).uniq
+            user.custom_fields[DiscourseVoting::UP_VOTES_ARCHIVE] = user.up_votes_archive.dup - [topic.id]
+            user.save!
+          end
+
+          UserCustomField.where(name: DiscourseVoting::DOWN_VOTES_ARCHIVE, value: topic.id).find_each do |user_field|
+            user = User.find(user_field.user_id)
+            user.custom_fields[DiscourseVoting::DOWN_VOTES] = user.up_votes.dup.push(topic.id).uniq
+            user.custom_fields[DiscourseVoting::DOWN_VOTES_ARCHIVE] = user.up_votes_archive.dup - [topic.id]
             user.save!
           end
           topic.update_vote_count
@@ -293,7 +368,7 @@ after_initialize do
         UserCustomField.where(
           "value = :value AND name in (:keys)",
           value: post.topic_id.to_s,
-          keys: [DiscourseVoting::VOTES, DiscourseVoting::VOTES_ARCHIVE]
+          keys: [DiscourseVoting::UP_VOTES, DiscourseVoting::UP_VOTES_ARCHIVE, DiscourseVoting::DOWN_VOTES, DiscourseVoting::DOWN_VOTES_ARCHIVE]
         ).exists?
       new_category_id = post.reload.topic.category_id
       if Category.can_vote?(new_category_id)
@@ -308,13 +383,29 @@ after_initialize do
     if orig.who_voted.present? && orig.closed
       orig.who_voted.each do |user|
 
-        if user.votes.include?(dest.id)
+        if user.up_votes.include?(dest.id)
           # User has voted for both +orig+ and +dest+.
           # Remove vote for topic +orig+.
-          user.custom_fields[DiscourseVoting::VOTES] = user.votes.dup - [orig.id]
+          user.custom_fields[DiscourseVoting::UP_VOTES] = user.up_votes.dup - [orig.id]
         else
           # Change the vote for +orig+ in a vote for +dest+.
-          user.custom_fields[DiscourseVoting::VOTES] = user.votes.map { |vote| vote == orig.id ? dest.id : vote }
+          user.custom_fields[DiscourseVoting::UP_VOTES] = user.up_votes.map { |vote| vote == orig.id ? dest.id : vote }
+        end
+
+        user.save!
+      end
+    end
+
+    if orig.who_down_voted.present? && orig.closed
+      orig.who_down_voted.each do |user|
+
+        if user.down_votes.include?(dest.id)
+          # User has voted for both +orig+ and +dest+.
+          # Remove vote for topic +orig+.
+          user.custom_fields[DiscourseVoting::DOWN_VOTES] = user.down_votes.dup - [orig.id]
+        else
+          # Change the vote for +orig+ in a vote for +dest+.
+          user.custom_fields[DiscourseVoting::DOWN_VOTES] = user.down_votes.map { |vote| vote == orig.id ? dest.id : vote }
         end
 
         user.save!
@@ -328,8 +419,9 @@ after_initialize do
   require File.expand_path(File.dirname(__FILE__) + '/app/controllers/discourse_voting/votes_controller')
 
   DiscourseVoting::Engine.routes.draw do
-    post 'vote' => 'votes#vote'
+    post 'up_vote' => 'votes#up_vote'
     post 'unvote' => 'votes#unvote'
+    post 'down_vote' => 'votes#down_vote'
     get 'who' => 'votes#who'
   end
 

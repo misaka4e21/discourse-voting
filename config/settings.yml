@@ -4,6 +4,9 @@ plugins:
   voting_enabled:
     default: true
     client: true
+  voting_allow_down_vote:
+    default: true
+    client: true
   voting_show_who_voted:
     default: true
     client: true

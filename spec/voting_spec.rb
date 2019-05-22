@@ -17,6 +17,7 @@ describe DiscourseVoting do
 
   before do
     SiteSetting.voting_enabled = true
+    SiteSetting.voting_allow_down_vote = false
     SiteSetting.voting_show_who_voted = true
   end
 
@@ -26,7 +27,7 @@ describe DiscourseVoting do
 
     expect(user0.reached_voting_limit?).to eq(false)
 
-    user0.custom_fields["votes"] = [topic0.id.to_s]
+    user0.custom_fields[DiscourseVoting::UP_VOTES] = [topic0.id.to_s]
     user0.save!
 
     expect(user0.reached_voting_limit?).to eq(true)
@@ -40,10 +41,10 @@ describe DiscourseVoting do
 
       # +user0+ votes +topic0+, +user1+ votes +topic1+ and +user2+ votes both
       # topics.
-      users[0].custom_fields[DiscourseVoting::VOTES] = users[0].votes.dup.push(topic0.id.to_s)
-      users[1].custom_fields[DiscourseVoting::VOTES] = users[1].votes.dup.push(topic1.id.to_s)
-      users[2].custom_fields[DiscourseVoting::VOTES] = users[2].votes.dup.push(topic0.id.to_s)
-      users[2].custom_fields[DiscourseVoting::VOTES] = users[2].votes.dup.push(topic1.id.to_s)
+      users[0].custom_fields[DiscourseVoting::UP_VOTES] = users[0].up_votes.dup.push(topic0.id.to_s)
+      users[1].custom_fields[DiscourseVoting::UP_VOTES] = users[1].up_votes.dup.push(topic1.id.to_s)
+      users[2].custom_fields[DiscourseVoting::UP_VOTES] = users[2].up_votes.dup.push(topic0.id.to_s)
+      users[2].custom_fields[DiscourseVoting::UP_VOTES] = users[2].up_votes.dup.push(topic1.id.to_s)
 
       users.each { |u| u.save! }
 
@@ -55,10 +56,10 @@ describe DiscourseVoting do
       users.each(&:reload)
       [topic0, topic1].each(&:reload)
 
-      expect(users[0].votes).to eq([topic1.id])
-      expect(users[1].votes).to eq([topic1.id])
-      expect(users[2].votes).to eq([topic1.id])
-      expect(users[3].votes).to eq([])
+      expect(users[0].up_votes).to eq([topic1.id])
+      expect(users[1].up_votes).to eq([topic1.id])
+      expect(users[2].up_votes).to eq([topic1.id])
+      expect(users[3].up_votes).to eq([])
 
       expect(topic0.vote_count).to eq(0)
       expect(topic1.vote_count).to eq(3)
@@ -70,10 +71,10 @@ describe DiscourseVoting do
       users.each(&:reload)
       [topic0, topic1].each(&:reload)
 
-      expect(users[0].votes).to eq([topic0.id])
-      expect(users[1].votes).to eq([topic1.id])
-      expect(users[2].votes).to eq([topic0.id, topic1.id])
-      expect(users[3].votes).to eq([])
+      expect(users[0].up_votes).to eq([topic0.id])
+      expect(users[1].up_votes).to eq([topic1.id])
+      expect(users[2].up_votes).to eq([topic0.id, topic1.id])
+      expect(users[3].up_votes).to eq([])
 
       expect(topic0.vote_count).to eq(2)
       expect(topic1.vote_count).to eq(2)
@@ -82,15 +83,15 @@ describe DiscourseVoting do
 
   context "when a user has an empty string as the votes custom field" do
     before do
-      user0.custom_fields[DiscourseVoting::VOTES] = ""
-      user0.custom_fields[DiscourseVoting::VOTES_ARCHIVE] = ""
+      user0.custom_fields[DiscourseVoting::UP_VOTES] = ""
+      user0.custom_fields[DiscourseVoting::UP_VOTES_ARCHIVE] = ""
       user0.save
       user0.reload
     end
 
     it "returns a vote count of zero" do
       expect(user0.vote_count).to eq (0)
-      expect(user0.votes_archive).to eq ([])
+      expect(user0.up_votes_archive).to eq ([])
     end
   end
 
@@ -121,7 +122,7 @@ describe DiscourseVoting do
 
     it "enqueus a job to reclaim votes if voting is enabled for the new category" do
       user = post1.user
-      user.custom_fields[DiscourseVoting::VOTES_ARCHIVE] = [post1.topic_id, 456456]
+      user.custom_fields[DiscourseVoting::UP_VOTES_ARCHIVE] = [post1.topic_id, 456456]
       user.save!
 
       PostRevisor.new(post1).revise!(admin, category_id: category1.id)
@@ -130,13 +131,13 @@ describe DiscourseVoting do
       Jobs::VoteReclaim.new.execute(topic_id: post1.topic_id)
       user.reload
 
-      expect(user.votes).to eq([post1.topic_id])
-      expect(user.votes_archive).to eq([456456])
+      expect(user.up_votes).to eq([post1.topic_id])
+      expect(user.up_votes_archive).to eq([456456])
     end
 
     it "enqueus a job to release votes if voting is disabled for the new category" do
       user = post0.user
-      user.custom_fields[DiscourseVoting::VOTES] = [post0.topic_id, 456456]
+      user.custom_fields[DiscourseVoting::UP_VOTES] = [post0.topic_id, 456456]
       user.save!
 
       PostRevisor.new(post0).revise!(admin, category_id: category2.id)
@@ -145,8 +146,8 @@ describe DiscourseVoting do
       Jobs::VoteRelease.new.execute(topic_id: post0.topic_id)
       user.reload
 
-      expect(user.votes_archive).to eq([post0.topic_id])
-      expect(user.votes).to eq([456456])
+      expect(user.up_votes_archive).to eq([post0.topic_id])
+      expect(user.up_votes).to eq([456456])
     end
 
     it "doesn't enqueue a job if the topic has no votes" do
@@ -155,6 +156,24 @@ describe DiscourseVoting do
 
       PostRevisor.new(post1).revise!(admin, category_id: category1.id)
       expect(Jobs::VoteReclaim.jobs.size).to eq(0)
+    end
+  end
+
+  context "when down-voting is allowed" do
+    before(:all) do
+      SiteSetting.voting_allow_down_vote = true
+    end
+
+    it "counting votes correctly" do
+      user0.custom_fields[DiscourseVoting::DOWN_VOTES] = [topic0.id, topic1.id]
+      user1.custom_fields[DiscourseVoting::UP_VOTES] = [topic1.id]
+      user0.save!
+      user1.save!
+
+      [topic0, topic1].each { |t| t.update_vote_count }
+
+      expect(topic0.vote_count).to eq(-1)
+      expect(topic1.vote_count).to eq(0)
     end
   end
 end

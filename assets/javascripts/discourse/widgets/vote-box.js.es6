@@ -19,9 +19,10 @@ export default createWidget("vote-box", {
 
   html(attrs, state) {
     var voteCount = this.attach("vote-count", attrs);
-    var voteButton = this.attach("vote-button", attrs);
+    var voteButton = this.attach("up-vote-button", attrs);
+    var downVoteButton = this.siteSettings.voting_allow_down_vote ? this.attach("down-vote-button", attrs) : null;
     var voteOptions = this.attach("vote-options", attrs);
-    let contents = [voteCount, voteButton, voteOptions];
+    let contents = [voteCount, voteButton, downVoteButton, voteOptions];
 
     if (state.votesAlert > 0) {
       const html =
@@ -52,10 +53,22 @@ export default createWidget("vote-box", {
     this.hideVotesAlert();
   },
 
-  addVote() {
+  addUpVote() {
+    return this.addVote(false);
+  },
+
+  addDownVote() {
+    if (this.siteSettings.voting_allow_down_vote) {
+      return this.addVote(true);
+    }
+  },
+
+  addVote(downVote = false) {
     var topic = this.attrs;
     var state = this.state;
-    return ajax("/voting/vote", {
+    const voteDirection = downVote?"down":"up";
+    const voteReverseDirection = downVote?"up":"down";
+    return ajax(`/voting/${voteDirection}_vote`, {
       type: "POST",
       data: {
         topic_id: topic.id
@@ -63,7 +76,9 @@ export default createWidget("vote-box", {
     })
       .then(result => {
         topic.set("vote_count", result.vote_count);
-        topic.set("user_voted", true);
+        topic.set(`user_${voteDirection}_voted`, true);
+        topic.set(`user_${voteReverseDirection}_voted`, false);
+        topic.set(`user_voted`, true);
         this.currentUser.set("votes_exceeded", !result.can_vote);
         if (result.alert) {
           state.votesAlert = result.votes_left;
@@ -87,6 +102,8 @@ export default createWidget("vote-box", {
       .then(result => {
         topic.set("vote_count", result.vote_count);
         topic.set("user_voted", false);
+        topic.set("user_up_voted", false);
+        topic.set("user_down_voted", false);
         this.currentUser.set("votes_exceeded", !result.can_vote);
         topic.set("who_voted", result.who_voted);
         state.allowClick = true;

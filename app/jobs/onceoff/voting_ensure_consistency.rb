@@ -5,16 +5,24 @@ module Jobs
     def execute_onceoff(args)
       aliases = {
         vote_count: DiscourseVoting::VOTE_COUNT,
-        votes: DiscourseVoting::VOTES,
-        votes_archive: DiscourseVoting::VOTES_ARCHIVE,
+        up_votes: DiscourseVoting::UP_VOTES,
+        up_votes_archive: DiscourseVoting::UP_VOTES_ARCHIVE,
       }
 
       # archive votes to closed or archived or deleted topics
       DB.exec(<<~SQL, aliases)
         UPDATE user_custom_fields ucf
-        SET name = :votes_archive
+        SET name = :up_votes_archive
         FROM topics t
-        WHERE ucf.name = :votes
+        WHERE ucf.name = :up_votes
+        AND (t.closed OR t.archived OR t.deleted_at IS NOT NULL)
+        AND t.id::text = ucf.value
+      SQL
+      DB.exec(<<~SQL, aliases)
+        UPDATE user_custom_fields ucf
+        SET name = :down_votes_archive
+        FROM topics t
+        WHERE ucf.name = :down_votes
         AND (t.closed OR t.archived OR t.deleted_at IS NOT NULL)
         AND t.id::text = ucf.value
       SQL
@@ -22,9 +30,19 @@ module Jobs
       # un-archive votes to open topics
       DB.exec(<<~SQL, aliases)
         UPDATE user_custom_fields ucf
-        SET name = :votes
+        SET name = :up_votes
         FROM topics t
-        WHERE ucf.name = :votes_archive
+        WHERE ucf.name = :up_votes_archive
+        AND NOT t.closed
+        AND NOT t.archived
+        AND t.deleted_at IS NULL
+        AND t.id::text = ucf.value
+      SQL
+      DB.exec(<<~SQL, aliases)
+        UPDATE user_custom_fields ucf
+        SET name = :down_votes
+        FROM topics t
+        WHERE ucf.name = :down_votes_archive
         AND NOT t.closed
         AND NOT t.archived
         AND t.deleted_at IS NULL
@@ -39,14 +57,14 @@ module Jobs
               ucf1.user_id = ucf2.user_id AND
               ucf1.value = ucf2.value AND
               ucf1.name = ucf2.name AND
-              (ucf1.name IN (:votes, :votes_archive))
+              (ucf1.name IN (:up_votes, :up_votes_archive, :down_votes, :down_votes_archive))
       SQL
 
       # delete votes associated with no topics
       DB.exec(<<~SQL, aliases)
         DELETE FROM user_custom_fields ucf
         WHERE ucf.value IS NULL
-        AND ucf.name IN (:votes, :votes_archive)
+        AND ucf.name IN (:up_votes, :up_votes_archive, :down_votes, :down_votes_archive)
       SQL
 
       # delete duplicate vote counts for topics
@@ -66,7 +84,7 @@ module Jobs
         WITH missing_ids AS (
           SELECT DISTINCT t.id FROM topics t
           JOIN user_custom_fields ucf ON t.id::text = ucf.value AND
-            ucf.name IN (:votes, :votes_archive)
+            ucf.name IN (:up_votes, :up_votes_archive, :down_votes, :down_votes_archive)
           LEFT JOIN topic_custom_fields tcf ON t.id = tcf.topic_id
             AND tcf.name = :vote_count
           WHERE tcf.topic_id IS NULL
@@ -83,20 +101,26 @@ module Jobs
           SELECT t1.id FROM topics t1
           LEFT JOIN user_custom_fields ucf
             ON ucf.value = t1.id::text AND
-              ucf.name IN (:votes, :votes_archive)
+              ucf.name IN (:up_votes, :up_votes_archive, :down_votes, :down_votes_archive)
           WHERE ucf.id IS NULL
         )
       SQL
 
       # correct topics vote counts
       DB.exec(<<~SQL, aliases)
-        UPDATE topic_custom_fields tcf
-        SET value = (
+        WITH up_vote_count AS (
           SELECT COUNT(*) FROM user_custom_fields ucf
           WHERE tcf.topic_id::text = ucf.value AND
-            ucf.name IN (:votes, :votes_archive)
+            ucf.name IN (:up_votes, :up_votes_archive)
+          GROUP BY ucf.value
+        ), down_vote_count AS (
+          SELECT COUNT(*) FROM user_custom_fields ucf
+          WHERE tcf.topic_id::text = ucf.value AND
+            ucf.name IN (:down_votes, :down_votes_archive)
           GROUP BY ucf.value
         )
+        UPDATE topic_custom_fields tcf
+        SET value = (up_vote_count - down_vote_count)
         WHERE tcf.name = :vote_count
       SQL
     end
